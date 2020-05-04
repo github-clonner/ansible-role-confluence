@@ -14,34 +14,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+- name: include default variables
+  include_vars: "../vars/main.yml"
+  tags: confluence
+
 - name: include release specific variables
-  include_vars: "{{ loop_var }}"
-  with_first_found:
-    - files:
+  include_vars: "{{ lookup('first_found', _params) }}"
+  vars:
+    _params:
+      files:
         - "{{ ansible_distribution | lower }}-{{ ansible_distribution_version | lower }}.yml"
         - "{{ ansible_distribution | lower }}-{{ ansible_distribution_major_version | lower }}.yml"
         - "{{ ansible_os_family | lower }}-{{ ansible_distribution_major_version | lower }}.yml"
         - "{{ ansible_distribution | lower }}.yml"
         - "{{ ansible_os_family | lower }}.yml"
-      paths: "../vars"
-      skip: "yes"
-  loop_control:
-    loop_var: "loop_var"
+      paths:
+        - "../vars"
+  ignore_errors: true
   tags: confluence
 
 - name: include release specific tasks
-  include_tasks: "{{ loop_var }}"
-  with_first_found:
-    - files:
+  include_tasks: "{{ lookup('first_found', _params) }}"
+  vars:
+    _params:
+      files:
         - "{{ ansible_distribution | lower }}-{{ ansible_distribution_version | lower }}.yml"
         - "{{ ansible_distribution | lower }}-{{ ansible_distribution_major_version | lower }}.yml"
         - "{{ ansible_os_family | lower }}-{{ ansible_distribution_major_version | lower }}.yml"
         - "{{ ansible_distribution | lower }}.yml"
         - "{{ ansible_os_family | lower }}.yml"
-      paths: "."
-      skip: "yes"
-  loop_control:
-    loop_var: "loop_var"
+      paths:
+        - "."
+  ignore_errors: true
+  tags: confluence
+
+- name: groupadd
+  group:
+    name: "{{ confluence_group }}"
+    system: true
+    state: "present"
+  tags: confluence
+
+- name: useradd
+  user:
+    name: "{{ confluence_owner }}"
+    group: "{{ confluence_group }}"
+    home: "{{ confluence_home }}"
+    shell: "/usr/sbin/nologin"
+    system: true
+    create_home: false
+    state: "present"
   tags: confluence
 
 - name: prepare directories
@@ -51,58 +73,123 @@
     group: "{{ item.group | default('root') }}"
     mode: "{{ item.mode | default('0755') }}"
     state: "{{ item.state | default('directory') }}"
-  with_items:
-    - { dest: "/etc/init.d" }
-    - { dest: "/etc/systemd/system" }
-    - { dest: "/opt/atlassian/confluence", owner: "daemon", group: "daemon" }
-    - { dest: "/var/atlassian/application-data/confluence", owner: "daemon", group: "daemon" }
+  loop:
+    - { dest: "/lib/systemd/system" }
+    - { dest: "{{ confluence_download.dest | dirname }}" }
+    - { dest: "{{ mysql_jdbc_download.dest | dirname }}" }
+    - { dest: "{{ postgresql_jdbc_download.dest | dirname }}" }
+    - dest: "{{ confluence_catalina }}"
+      owner: "{{ confluence_owner }}"
+      group: "{{ confluence_group }}"
+    - dest: "{{ confluence_catalina }}/bin"
+      owner: "{{ confluence_owner }}"
+      group: "{{ confluence_group }}"
+    - dest: "{{ confluence_catalina }}/conf"
+      owner: "{{ confluence_owner }}"
+      group: "{{ confluence_group }}"
+    - dest: "{{ confluence_home }}"
+      owner: "{{ confluence_owner }}"
+      group: "{{ confluence_group }}"
+  tags: confluence
+
+- name: download archive
+  vars:
+    ansible_python_interpreter: "python3"
+  get_url:
+    url: "{{ item.url }}"
+    dest: "{{ item.dest }}"
+    checksum: "{{ item.checksum }}"
+    timeout: 300
+  loop:
+    - "{{ confluence_download }}"
+    - "{{ mysql_jdbc_download }}"
+    - "{{ postgresql_jdbc_download }}"
+  register: get_url_result
+  until: get_url_result is succeeded
   tags: confluence
 
 - name: unarchive package
   shell: |
-    cd /opt/atlassian/confluence
-    curl -skL {{ confluence_download_url }} | tar zxf - --strip-components 1
-    cd /opt/atlassian/confluence/WEB-INF/lib
+    set -o pipefail
+    rm -rf {{ confluence_catalina }} \
+      && mkdir -p {{ confluence_catalina }}
+    cd {{ confluence_catalina }}
+    TMP_DIR="$(mktemp -d)" \
+      && tar -zx -C $TMP_DIR -f {{ confluence_download.dest }} \
+      && cp -rfT $TMP_DIR/* . \
+      && rm -rf $TMP_DIR
+    cd {{ confluence_catalina }}/confluence/WEB-INF/lib
     rm -rf *mysql*.jar
-    curl -skL {{ mysql_jdbc_download_url }} | tar zxf - --strip-components 1 --wildcards "mysql*/*mysql*.jar"
-    cd /opt/atlassian/confluence/WEB-INF/lib
+    TMP_DIR="$(mktemp -d)" \
+      && tar -zx -C $TMP_DIR -f {{ mysql_jdbc_download.dest }} \
+      && mv $TMP_DIR/*/*mysql*-bin.jar . \
+      && rm -rf $TMP_DIR
+    cd {{ confluence_catalina }}/confluence/WEB-INF/lib
     rm -rf *postgresql*.jar
-    curl -skL {{ postgresql_jdbc_download_url }} -O
-    chown -Rf daemon:daemon /opt/atlassian/confluence
+    cp {{ postgresql_jdbc_download.dest }} .
+    chown -Rf {{ confluence_owner }}:{{ confluence_group }} {{ confluence_catalina }}
+    chmod 0755 \
+      {{ confluence_catalina }} \
+      {{ confluence_catalina }}/bin \
+      {{ confluence_catalina }}/conf
   args:
-    creates: "/opt/atlassian/confluence/bin/start-confluence.sh"
+    executable: "/bin/bash"
+  when: get_url_result is changed
+  notify:
+    - confluence | systemctl daemon-reload
+    - confluence | systemctl restart confluence
   tags: confluence
 
 - name: copy templates
   template:
-    src: "./templates{{ item.dest }}.j2"
+    dest: "{{ item.dest }}"
+    src: "{{ item.src | default('./templates' + item.dest + '.j2') }}"
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default('0644') }}"
+  loop:
+    - { dest: "/lib/systemd/system/confluence.service" }
+    - dest: "{{ confluence_catalina }}/bin/setenv.sh"
+      src: "./templates/opt/atlassian/confluence/bin/setenv.sh.j2"
+      owner: "{{ confluence_owner }}"
+      group: "{{ confluence_group }}"
+      mode: "0755"
+    - dest: "{{ confluence_catalina }}/conf/server.xml"
+      src: "./templates/opt/atlassian/confluence/conf/server.xml.j2"
+      owner: "{{ confluence_owner }}"
+      group: "{{ confluence_group }}"
+  notify:
+    - confluence | systemctl daemon-reload
+    - confluence | systemctl restart confluence
+  tags: confluence
+
+- name: prepare files
+  file:
     dest: "{{ item.dest }}"
     owner: "{{ item.owner | default('root') }}"
     group: "{{ item.group | default('root') }}"
     mode: "{{ item.mode | default('0644') }}"
-  with_items:
-    - { dest: "/etc/init.d/confluence", mode: "0755" }
-    - { dest: "/etc/systemd/system/confluence.service" }
-    - { dest: "/opt/atlassian/confluence/bin/setenv.sh", owner: "daemon", group: "daemon", mode: "0755" }
-    - { dest: "/opt/atlassian/confluence/conf/server.xml", owner: "daemon", group: "daemon" }
-  register: template_result
+    state: "{{ item.state | default('file') }}"
+  loop:
+    - { dest: "/lib/systemd/system/confluence.service" }
+    - dest: "{{ confluence_catalina }}/bin/setenv.sh"
+      owner: "{{ confluence_owner }}"
+      group: "{{ confluence_group }}"
+      mode: "0755"
+    - dest: "{{ confluence_catalina }}/conf/server.xml"
+      owner: "{{ confluence_owner }}"
+      group: "{{ confluence_group }}"
   tags: confluence
 
-- name: systemctl daemon-reload
-  systemd:
-    name: confluence
-    daemon_reload: yes
-  when:
-    - ansible_service_mgr == 'systemd'
-    - template_result is changed
-  changed_when: false
-  ignore_errors: yes
-  tags: confluence
-
-- name: enable service
+- name: systemctl start confluence
   service:
-    name: confluence
-    enabled: yes
+    name: "confluence"
+    state: "started"
+    enabled: true
   changed_when: false
-  ignore_errors: yes
+  ignore_errors: true
+  tags: confluence
+
+- name: flush handlers
+  meta: flush_handlers
   tags: confluence

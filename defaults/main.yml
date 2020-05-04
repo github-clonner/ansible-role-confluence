@@ -14,6 +14,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Confluence version.
+confluence_version: "7.4.0"
+
+# Confluence download details.
+confluence_download: "{{ _confluence_download[confluence_version] }}"
+
+# MySQL JDBC version.
+mysql_jdbc_version: "5.1.48"
+
+# MySQL JDBC download details.
+mysql_jdbc_download: "{{ _mysql_jdbc_download[mysql_jdbc_version] }}"
+
+# PostgreSQL JDBC version.
+postgresql_jdbc_version: "42.2.12"
+
+# PostgreSQL JDBC download details.
+postgresql_jdbc_download: "{{ _postgresql_jdbc_download[postgresql_jdbc_version] }}"
+
+# Owner and group for Confluence.
+confluence_owner: "confluence"
+confluence_group: "confluence"
+
+# Confluence home directory.
+confluence_home: "/var/atlassian/application-data/confluence"
+
+# Confluence installation directory.
+confluence_catalina: "/opt/atlassian/confluence"
+
 # JVM minimal and maximum memory usage.
 confluence_jvm_minimum_memory: "1024m"
 confluence_jvm_maximum_memory: "1024m"
@@ -23,15 +51,14 @@ confluence_catalina_connector_proxyname: ~
 confluence_catalina_connector_proxyport: ~
 confluence_catalina_connector_scheme: "http"
 confluence_catalina_connector_secure: "false"
-confluence_catalina_context_path: ~
+confluence_catalina_context_path: "/"
 
 # Atlassian Support recommended JVM arguments.
-confluence_jvm_support_recommended_args: "-Datlassian.plugins.enable.wait=300"
+confluence_jvm_support_recommended_args: >-
+  -Datlassian.plugins.enable.wait=300
+  -XX:+UnlockExperimentalVMOptions
+  -XX:+UseCGroupMemoryLimitForHeap
+  -XX:MaxRAMFraction=1
 
 # Session timeout.
-confluence_session_timeout: 60
-
-# URL for download archives.
-confluence_download_url: "http://downloads.atlassian.com/software/confluence/downloads/atlassian-confluence-6.13.0.tar.gz"
-mysql_jdbc_download_url: "https://dev.mysql.com/get/Downloads/Connector-J/mysql-connector-java-8.0.13.tar.gz"
-postgresql_jdbc_download_url: "https://jdbc.postgresql.org/download/postgresql-42.2.5.jar"
+confluence_session_timeout: "300"
